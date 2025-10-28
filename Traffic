@@ -1,9 +1,9 @@
-#Mount Google Drive to Goggle Colab nvironment
+#Mount Google Drive to Goggle Colab nvironment. You have to change with your Google drive path
 =================================================
 from google.colab import drive
 drive.mount('/content/drive')
 ====================================================
-#get into the active directory, where the Traffic sign images and corrsponding .CSV files were stored
+#get into the active directory, where the Traffic sign images and corrsponding .CSV files were stored. You have to change with your Google drive path
 =================================================
 /content/drive/My Drive/traffic
 
