@@ -1,0 +1,3 @@
+#Mount Google Drive to Goggle Colab nvironment
+from google.colab import drive
+drive.mount('/content/drive')
