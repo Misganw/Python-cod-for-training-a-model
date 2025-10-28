@@ -1,3 +1,572 @@
 #Mount Google Drive to Goggle Colab nvironment
+=================================================
 from google.colab import drive
 drive.mount('/content/drive')
+====================================================
+#get into the active directory, where the Traffic sign images and corrsponding .CSV files were stored
+=================================================
+/content/drive/My Drive/traffic
+
+=================================================
+#import all necessary Keras and tTensorFlow Libraries
+=================================================
+import keras
+import tensorflow as tf
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Flatten, Activation,BatchNormalization
+from keras.layers import Conv2D, MaxPooling2D
+# from keras.utils import to_categorical
+from keras.preprocessing import image
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+# from tqdm import tqdm
+%matplotlib inline
+
+from tensorflow.keras.applications.vgg16 import VGG16
+from keras.applications.vgg16 import preprocess_input
+from tensorflow.keras.applications.mobilenet import MobileNet
+from keras.applications.mobilenet import preprocess_input
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from keras import regularizers, optimizers
+from tensorflow.keras.optimizers import Adam,Adamax,RMSprop,Adagrad,Adadelta,SGD
+# import seaborn as sns
+
+=================================================
+#Read the CSV file (Annotated data)
+=================================================
+
+train = pd.read_csv('/content/drive/My Drive/traffic/traffic11000.csv')    # reading the csv file
+# train.head()      # printing first five rows of the file
+pd.set_option('display.max_columns', None)
+train
+
+=================================================
+# Image preprocessing. Concatenating image data with the corresponding annotated target labels.
+=================================================
+import numpy
+from numpy import loadtxt
+from numpy import asarray
+from numpy import save
+from tensorflow.keras.utils import load_img
+from tensorflow.keras.utils import img_to_array
+train_image = []
+with tf.device('/gpu:0'):
+  for i in range(train.shape[0]):
+      img = tf.keras.utils.load_img('/content/drive/My Drive/traffic/traffic_sign11000/'+train['image'][i]+'.jpg', target_size=(64,64,3))
+      img = img_to_array(img)
+      img = img/255
+      train_image.append(img)
+  X = np.array(train_image)
+# save to npy file
+save('trafficdata11000.npy', X)
+
+=================================================
+#Load the preprocessed and saved data.
+=================================================
+from numpy import load
+# load saved image feature
+# X = load('traffic_11000.npy')
+X = load('trafficdata11000.npy')
+X.shape
+
+
+=================================================
+#Extract annotated target label from CSV file
+=================================================
+y = np.array(train.drop(['image', 'tags'],axis=1))
+y.shape
+
+
+=================================================
+#Split datasett into training and testing
+=================================================
+X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=5, test_size=0.2)
+
+
+=================================================
+#Mobile Net Base Line Model
+=================================================
+from keras import models
+from keras import layers
+
+#Load the MobileNet model
+IMAGE_SIZE=[64,64]
+Mobilenet = MobileNet(input_shape=IMAGE_SIZE + [3], weights='imagenet', include_top=False)
+
+# Freeze nothing layers
+for layer in Mobilenet.layers:
+  layer.trainable = False
+
+# Create the model
+with tf.device('/gpu:0'):
+  base_mobilenet = tf.keras.models.Sequential()
+  base_mobilenet.add(Mobilenet)
+  # Add new layers
+  base_mobilenet.add(layers.Flatten())
+  base_mobilenet.add(layers.Dense(1024, activation='relu'))
+  base_mobilenet.add(layers.Dense(156, activation='softmax'))
+  # mobilenet.summary()
+
+
+
+=================================================
+# VGG 16 Baseline Model
+=================================================
+from keras import models
+from keras import layers
+
+#Load the VGG model
+IMAGE_SIZE=[64,64]
+vgg = VGG16(input_shape=IMAGE_SIZE + [3], weights='imagenet', include_top=False)
+
+# Freeze the layers except the last 2 layers
+# for layer in vgg.layers[:-4]:
+#   layer.trainable = False
+
+# Create the model
+with tf.device('/gpu:0'):
+  vggnet = tf.keras.models.Sequential()
+  vggnet.add(vgg)
+  # Add new layers
+  vggnet.add(layers.Flatten())
+  vggnet.add(BatchNormalization())
+  vggnet.add(layers.Dense(1024, activation='relu'))
+  # vggnet.add(layers.Dense(1024, activation='relu'))
+  vggnet.add(BatchNormalization())
+  vggnet.add(layers.Dense(156, activation='softmax'))
+  # Show a summary of the model. Check the number of trainable parameters
+  # vggnet.summary()
+
+
+
+
+
+=================================================
+# Hybrid Model
+=================================================
+import tensorflow as tf
+from tensorflow.keras.applications import MobileNet, MobileNetV2,VGG16
+from tensorflow.keras.layers import GlobalAveragePooling2D, Concatenate, Dense
+from tensorflow.keras.models import Model
+
+
+# First Baselien model
+# Load pre-trained models
+base_model_mobilenet = MobileNet(weights='imagenet', include_top=False, input_shape=(64, 64, 3))
+
+# Freeze base models
+# for layer in base_model_mobilenet.layers[:-2]:
+#     layer.trainable = False
+
+# Feature extraction
+x1 = base_model_mobilenet.output
+
+# Global Average Pooling (optional)
+x1 = GlobalAveragePooling2D()(x1)
+
+
+# second baseline model
+# Load pre-trained models
+base_model_vgg16 = VGG16(weights='imagenet', include_top=False, input_shape=(64, 64, 3))
+
+# Freeze base models
+
+# for layer in base_model_vgg16.layers[:-2]:
+#     layer.trainable = False
+
+# Feature extraction
+x2 = base_model_vgg16.output
+
+# Global Average Pooling (optional)
+x2 = GlobalAveragePooling2D()(x2)
+
+
+# combining the first and second baseline model
+# Concatenate features
+combined_features = Concatenate()([x1, x2])
+
+# Fully connected layer
+dense_layer=BatchNormalization()(combined_features)
+dense_layer = Dense(1024, activation='relu')(combined_features)
+dense_layer=BatchNormalization()(dense_layer)
+predictions = Dense(156, activation='softmax')(dense_layer)
+model = Model(inputs=[base_model_mobilenet.input, base_model_vgg16.input], outputs=predictions)
+# model.summary()
+
+=================================================
+# Compiling and train the combined model
+=================================================
+lr = 0.00001
+epoch = 100
+with tf.device('/gpu:0'):
+  opt = tf.keras.optimizers.Adamax(learning_rate=lr, decay = 1e-6)
+
+model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Assuming you have data loaders or generators
+hybrid_model=model.fit([X_train, X_train], y_train, epochs=epoch,validation_split = 0.2, batch_size=32)
+
+
+
+
+=================================================
+# Code for evaluating the models
+=================================================
+# Evaluate
+loss, accuracy = model.evaluate([X_train, X_train], y_train,verbose=False)
+print("Training Accuracy: {:.2f}".format(accuracy *100))
+print("Training loss: {:.2f}".format(loss *100))
+loss, accuracy = model.evaluate([X_test, X_test], y_test, verbose=False)
+print("Training Accuracy: {:.2f}".format(accuracy *100))
+print("Training loss: {:.2f}".format(loss *100))
+
+
+
+
+=================================================
+# declare class name
+=================================================
+class_names = np.array(['ለብስክሌት_ብቻ_የተፈቀደ_ነው',	'የአደባባዩን_ግራ_ይዘህ_ንዳ',	'የአደባባዩን_ቀኝ_ይዘህ_ንዳ',	'በመንገዱ_ላይ_የተፈቀደ_አነስተኛ_ፍጥነት_መጨረሻ',
+                        'ፍንዳታ_ለሚያስከትል_ጭነት_የተፈቀደ',	'በግራ_በኩል_ያሽከርክሩ',	'በቀኝ_በኩል_ያሽከርክሩ',	'የጭነት_ተሽከርካሪ_መተላለፊያ',	'አደባባይ_መኖሩን_የሚገልጽ',
+                        'የተፈቀደ_አነስተኛ_የፍጥነት_መጠን',	'የመኪና_ማቆሚያን_የሚገልጽ',	'በቀስት_በተጠቆመው_አቅጣጫ_ቀጥል',
+                        'ወደ_ግራ_ታጠፍ',	'ተሸከርካሪዎች_ወደ_ተመሳሳይ_መዳረሻ_ለመጓዝ_በሁለቱም_በኩል_ሊያልፉ_ይችላሉ',
+                        'ለአንድ_መስመር_ከተቀመጠው_አነስተኛ_ፍጥነት_በላይ_ማሽከርከርን_የሚያስገድድ',
+                        'በተለያየ_መስመር_ውስጥ_ተፈጻሚ_እንድሆን_የተቀመጠ_አነስተኛ_የፍጥነት_ወሰን',	'በተለያየ_መስመር_ውስጥ_ተፈጻሚ_እንድሆን_የተቀመ_የፍጥነት_ወሰን',
+                        'አልጋ_መኖሩን_የሚገልጽ',	'የእግረኛ_መንገድ',	'አንድ_ማይል_ርቀት_ወደ_ፓርኪንግ_ቦታ',	'የመመገቢያ_ቦታ',	'መሙያ_ጣቢያ',	'የመጀመሪያ_እርዳታን_የሚገልጽ',
+                        'ሆስፒታል',	'መረጃ_ቤት',	'መዝናኛ_ወይም_ቡና_ቤት_መኖሩን_የሚገልጽ',	'የመኪና_ማቆሚያ_ቦታ_ከድንገተኛ_ስልክ_ጋር',	'የመኪና_ማቆሚያ_ቦታ',
+                        'የጥገና_ቦታ',	'በዚህ_ለተሽከርካሪ_ትራፊክ_መንገድ_የለም',	'ለተሽከርካ_ትራፊክ_መንገድ_የለም',	'የአንድ_መንገድ_ትራፊክ',
+                        'የህዝብ_ቴሌፎን',	'የጥገና_ፋሲሊቲ',	'የክፍያ_ዳስ_ምልክት',	'የቱሪስት_እረፍት_ወይም_አካባቢ',	'የጭነት_መኝታ_ምልክት',	'መንቃት_እዚህ_ይጀመራል',
+                        'የክብደት_ገደብ',	'ደንበኞች',	'የቅድሚያ_መንገዱ_መጨረሻ',	'የመጨረሻ_ከተማ_ፍጥነት_ገደብ',	'ባዶ_መንገድ_ስጥ',	'ለሚመጡ_ተሽከርካሪዎች_መንገድ_ስጥ',
+                        'መንገድ_ስጥ',	'በእንስሳት_የሚነዱ_ጋሪዎች_የሉም',	'ምንም_ሳይክል_የለም',	'መግቢያ_የለም',	'ፈንጂዎች_የሉም',	'ከተጠቆመው_ክብደት_በላይ_ምንም_ዕቃ_የለም',
+                        'በእጅ_የሚነዳ_ጋሪ_የለም',	'ጥሩምባ_የለም','ወደ_ግራ_መታጠፍ_የተከለከለ',	'ለተጫነ_ተሽከርካሪ_ማለፍ_የለም',	'ምንም_ተሽከርካሪ_ከሶሎ_ሞተር_ሳይክል_በስተቀር',	'ምንም_ሞተር_ተሽከርካሪ',
+                        'ከሁለት_እግር_በላይ_ያላቸው_ተሽከርካሪዎች_መቅደም_የተከለከለ',	'የመኪና_ማቆሚያ_የለም',	'እግረኞች_የሉም',	'ወደ_ቀኝ_መታጠፍ_የተከለከለ',	'ብቸኛ_ሞተር_ሳይክል_የለም',
+                        'ማቆም_የለም',	'የሚጎተት_መኪና_የለም',	'የተጎተቱ_ካራቫስ_የለም',	'የከተማ_ክልል',	'ወደ_ዩ_ግራ_መታጠፍ_የለም',	'ወደ_ዩ_ቀኝ_መታጠፍ_የለም',
+                        'ምንም_የተሽከርካሪ_እጀታ_ጭነት_በላይ_አልተገለጸም',	'ከኸያ_ቶን_በላይ_ተሽከርካሪ_የተከለከለ',	'ተሽከርካሪ_የለም',	'ከከፍተኛው_ወርድ_በላይ_ምንም_ተሽከርካሪ_አይታይም',
+                        'ከተገለጸው_ርዝመት_በላይ_የተከለከለ',	'ከሚታየው_ከፍታ_በላይ_ምንም_ተሽከርካሪ_ማለፍ_አይችልም',	'የመጠበቅ_መጨረሻ',	'አይጠበቅም',	'ቅድሚያ_መንገድ',	'ገደብ_አልቋል',
+                        'መስቀለኛ_መንገድ_ከመግባትህ_በፊት_አቁም',	'አቁም',	'ከፍተኛው_ፍጥነት',	'መኪና_አለ',	'ወደግራ_ታጠፍ',	'ወደ_ቀኝ_ታጠፍ',	'ጋሪዎች_ከፊት_አሉ',
+                        'የቁልቁል_ማርከሮች',	'መስቀለኛ_መንገድ',	'የአካል_ጉዳተኛ_ሰው',	'ድርብ_ታጠፍ',	'ድርብ_ቁልቁል_ማርከሮች',	'በጥንቃቄ_መንዳት',	'የአስፋልት_መንገድ_መጨረሻ',
+                        'የድልድይ_ግድግዳ_መጨረሻ',	'የሁለት_ጋሪ_መንገድ_መጨረሻ',	'በሁለት_የተከፈለ_መንገድ_መጨረሻ',	'የእርሻ_ማሽን_የሚገልጽ_አንድ',	'የእርሻ_ማሽን_የሚገልጽ_ሁለት',
+                        'ከፊት_ቀያሽ_አለ',	'መጀመሪያ_ግራ_ከዚያ_ቀጥታ_ታጠፍ',	'መጀመሪያ_ቀኝ_ከዚያ_ቀጥታ_ታጠፍ',	'ከውሃ_እስከ_አስፋልት_መንገድ',	'ለባቡር_ሎኮሞቲቭ_መንገድ_ስጥ',
+                        'ጎባጣ_ድልድይ',	'የቤት_እንስሳት',	'ከታጣፊ_መንገድ_ላይ_የሚገነጠል',	'የሚጫወቱ_ልጆች',	'ደረጃ_በእንቅፋት_መሻገር',	'የተጫነ_ደረቅ_ተሽከርካሪ_ከፊት',	'ወንዶች_በስራ_ ላይ',
+                        'ጠባብ_ድልድይ',	'በመንገዳው_በሁለት_መንገድ_ተከፈለ',	'ከፍት_ወይም_ዳገታማ_ድልድይ_ከፊት',	'ማረሻ_የእርሻ_ተሽከርካሪ_ከፊት',	'ወንዝ_ዳር',
+                        'ተከታታይ_መኪና',	'ድርብ_የባቡር_መስመር',	'ባቡር_በስተግራ_ይሻገራል',	'ባቡር_በስተቀኝ_ይሻገራል',	'ነጠላ_የባቡር_አቋራጭ',	'በመንገዱ_አቋራጭ_የባቡር_ሎኮሞቲቭ',	'የባቡር_መሻገሪያ_T',
+                        'የመውደቅ_ወይም_የመውደቅ_ስጋት_መንገድ',	'የመንገድ_ጉብታዎች',	'በሁለቱም_ጎን_መንገዱ_ይጠባል',	'መንገዱ_በቀኝ_ይጠባል',	'መንገድ_ከኪሳራ_ጋር',	'የመንገድ_ስራ_ከፊት',
+                        'ክብ_ዙር',	'ትምህርት_ቤት',	'የመንገዱን_ወደ_ግራ_ጥርት_ማዘዋወር',	'የመንገዱን_አቅጣጫ_አጥራ',	'የጎን_መንገድ_ቅርንጫፍ_ግራ',	'የጎን_መንገድ_ቅርንጫፍ_ቀኝ',	'የግራ_ጎን_መንገድ',
+                        'ሰያፍ_የቀኝ_ጎን_መንገድ',	'የጎን_መንገድ_ቀኝ',	'ተንሸራታች_መንገድ',	'ሁለት_መንታ_ያለው_መንገድ',	'ቁልቁል_ዳገት_ወደታች',	'ቁልቁል_ዳገት_ወደላይ',	'አመላካች',	'ቲ_ቅርጽ_ያለው_መንገድ',
+                        'ቲ_ቅርጽ',	'በግራ_በኩል_የሚዋሃድ_መንገድ_አለ',	'ከፊት_የትራፊክ_ምልክቶች_አሉ',	'ትራም_በመንገድ_ላይ',	'የሁለት_መንገድ_ትራፊክ_በፊት_ማቋረጫ_ላይ',
+                        'ባለሁለት_መንገድ_ትራፊክ',	'ያልተስተካከለ_መንገድ',	'የማስጠንቀቂያ_ቀስት_እና_መሰጠት_ውስጥ',	'የማስጠንቀቂያ_ቀስት_ወደፊት_ይቆማል',	'የውሃ_ኮርስ_በመንገድ_ዳር',
+                        'የዱር_እንስሳት',	'ነፋስ',	'ዋይ_መገናኛ',	'የዜብራ_መንገድ',	'ዝግዛግ_መንገድ'])
+
+
+
+
+
+=================================================
+# plote confusion matrix
+=================================================
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+import matplotlib.font_manager as fm
+import tensorflow as tf
+
+# === Load Amharic Font ===
+font_path = '/usr/share/fonts/truetype/noto/NotoSansEthiopic-Regular.ttf'
+# font_path = '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf'
+ethio_font = fm.FontProperties(fname=font_path, size=11)
+
+with tf.device('/gpu:0'):
+    # Convert predictions and ground truth
+    y_true_classes = np.argmax(y_test, axis=1)
+    y_pred_classes = np.argmax(model.predict([X_test, X_test]), axis=1)
+
+    # Compute confusion matrix
+    cm = confusion_matrix(y_true_classes, y_pred_classes)
+
+    # Select a subset of classes to make it readable
+    start_idx, end_idx = 100, 156  # change as needed
+    cm_subset = cm[np.ix_(range(start_idx, end_idx), range(start_idx, end_idx))]
+    class_labels_subset = class_names[start_idx:end_idx]  # your Amharic class names
+    # === Replace underscores with spaces ===
+    class_labels_subset = [name.replace('_', ' ') for name in class_labels_subset]
+
+    # Plot
+    plt.figure(figsize=(20, 16))
+    ax = sns.heatmap(cm_subset, annot=True, fmt="d", cmap="Blues",
+                     xticklabels=class_labels_subset,
+                     yticklabels=class_labels_subset,
+                     cbar=True,annot_kws={"size": 14})
+
+    # Set Amharic labels for axes and title
+    ax.set_xlabel("Predicted vlaue")  # Predicted Label
+    ax.set_ylabel("True Value")  # True Label
+    ax.set_title("Confusion Matrix for class 101 - 156 ")
+
+    # Rotate x-ticks for readability
+    plt.xticks(rotation=45, ha="right", fontproperties=ethio_font)
+    plt.yticks(fontproperties=ethio_font)
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
+=================================================
+# creating classification report
+=================================================
+#classification report
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import classification_report
+# from sklearn.utils.multi_label import unique_labels
+from sklearn.utils.multiclass import unique_labels
+plt.rcParams['font.size'] = '13'
+# Get predicted values
+y_pred = model.predict([X_test, X_test])  # outputs probabilities of each classes
+# Create empty numpy array to match length of training data
+y_pred_array = np.zeros(X_test.shape[0])
+plt.rcParams['font.size'] = '13'
+# Find class with highest probability
+for i in range(0, y_pred.shape[0]):
+    label_predict = np.argmax(y_pred[i]) # column with max probability
+    y_pred_array[i] = label_predict
+
+# convert to integers
+y_pred_array = y_pred_array.astype(int)
+
+# Convert y_test to 1d numpy array
+y_test_array = np.zeros(X_test.shape[0])
+
+# Find class with 1
+for i in range(0, y_test.shape[0]):
+    label_predict = np.argmax(y_test[i])
+    y_test_array[i] = label_predict
+
+y_test_array = y_test_array.astype(int)
+# print(confusion_matrix(y_test_array, y_pred_array))
+target_names = ['ለብስክሌት_ብቻ_የተፈቀደ_ነው',	'የአደባባዩን_ግራ_ይዘህ_ንዳ',	'የአደባባዩን_ቀኝ_ይዘህ_ንዳ',	'በመንገዱ_ላይ_የተፈቀደ_አነስተኛ_ፍጥነት_መጨረሻ',
+                        'ፍንዳታ_ለሚያስከትል_ጭነት_የተፈቀደ',	'በግራ_በኩል_ያሽከርክሩ',	'በቀኝ_በኩል_ያሽከርክሩ',	'የጭነት_ተሽከርካሪ_መተላለፊያ',	'አደባባይ_መኖሩን_የሚገልጽ',
+                        'የተፈቀደ_አነስተኛ_የፍጥነት_መጠን',	'የመኪና_ማቆሚያን_የሚገልጽ',	'በቀስት_በተጠቆመው_አቅጣጫ_ቀጥል',
+                        'ወደ_ግራ_ታጠፍ',	'ተሸከርካሪዎች_ወደ_ተመሳሳይ_መዳረሻ_ለመጓዝ_በሁለቱም_በኩል_ሊያልፉ_ይችላሉ',
+                        'ለአንድ_መስመር_ከተቀመጠው_አነስተኛ_ፍጥነት_በላይ_ማሽከርከርን_የሚያስገድድ',
+                        'በተለያየ_መስመር_ውስጥ_ተፈጻሚ_እንድሆን_የተቀመጠ_አነስተኛ_የፍጥነት_ወሰን',	'በተለያየ_መስመር_ውስጥ_ተፈጻሚ_እንድሆን_የተቀመ_የፍጥነት_ወሰን',
+                        'አልጋ_መኖሩን_የሚገልጽ',	'የእግረኛ_መንገድ',	'አንድ_ማይል_ርቀት_ወደ_ፓርኪንግ_ቦታ',	'የመመገቢያ_ቦታ',	'መሙያ_ጣቢያ',	'የመጀመሪያ_እርዳታን_የሚገልጽ',
+                        'ሆስፒታል',	'መረጃ_ቤት',	'መዝናኛ_ወይም_ቡና_ቤት_መኖሩን_የሚገልጽ',	'የመኪና_ማቆሚያ_ቦታ_ከድንገተኛ_ስልክ_ጋር',	'የመኪና_ማቆሚያ_ቦታ',
+                        'የጥገና_ቦታ',	'በዚህ_ለተሽከርካሪ_ትራፊክ_መንገድ_የለም',	'ለተሽከርካ_ትራፊክ_መንገድ_የለም',	'የአንድ_መንገድ_ትራፊክ',
+                        'የህዝብ_ቴሌፎን',	'የጥገና_ፋሲሊቲ',	'የክፍያ_ዳስ_ምልክት',	'የቱሪስት_እረፍት_ወይም_አካባቢ',	'የጭነት_መኝታ_ምልክት',	'መንቃት_እዚህ_ይጀመራል',
+                        'የክብደት_ገደብ',	'ደንበኞች',	'የቅድሚያ_መንገዱ_መጨረሻ',	'የመጨረሻ_ከተማ_ፍጥነት_ገደብ',	'ባዶ_መንገድ_ስጥ',	'ለሚመጡ_ተሽከርካሪዎች_መንገድ_ስጥ',
+                        'መንገድ_ስጥ',	'በእንስሳት_የሚነዱ_ጋሪዎች_የሉም',	'ምንም_ሳይክል_የለም',	'መግቢያ_የለም',	'ፈንጂዎች_የሉም',	'ከተጠቆመው_ክብደት_በላይ_ምንም_ዕቃ_የለም',
+                        'በእጅ_የሚነዳ_ጋሪ_የለም',	'ጥሩምባ_የለም','ወደ_ግራ_መታጠፍ_የተከለከለ',	'ለተጫነ_ተሽከርካሪ_ማለፍ_የለም',	'ምንም_ተሽከርካሪ_ከሶሎ_ሞተር_ሳይክል_በስተቀር',	'ምንም_ሞተር_ተሽከርካሪ',
+                        'ከሁለት_እግር_በላይ_ያላቸው_ተሽከርካሪዎች_መቅደም_የተከለከለ',	'የመኪና_ማቆሚያ_የለም',	'እግረኞች_የሉም',	'ወደ_ቀኝ_መታጠፍ_የተከለከለ',	'ብቸኛ_ሞተር_ሳይክል_የለም',
+                        'ማቆም_የለም',	'የሚጎተት_መኪና_የለም',	'የተጎተቱ_ካራቫስ_የለም',	'የከተማ_ክልል',	'ወደ_ዩ_ግራ_መታጠፍ_የለም',	'ወደ_ዩ_ቀኝ_መታጠፍ_የለም',
+                        'ምንም_የተሽከርካሪ_እጀታ_ጭነት_በላይ_አልተገለጸም',	'ከኸያ_ቶን_በላይ_ተሽከርካሪ_የተከለከለ',	'ተሽከርካሪ_የለም',	'ከከፍተኛው_ወርድ_በላይ_ምንም_ተሽከርካሪ_አይታይም',
+                        'ከተገለጸው_ርዝመት_በላይ_የተከለከለ',	'ከሚታየው_ከፍታ_በላይ_ምንም_ተሽከርካሪ_ማለፍ_አይችልም',	'የመጠበቅ_መጨረሻ',	'አይጠበቅም',	'ቅድሚያ_መንገድ',	'ገደብ_አልቋል',
+                        'መስቀለኛ_መንገድ_ከመግባትህ_በፊት_አቁም',	'አቁም',	'ከፍተኛው_ፍጥነት',	'መኪና_አለ',	'ወደግራ_ታጠፍ',	'ወደ_ቀኝ_ታጠፍ',	'ጋሪዎች_ከፊት_አሉ',
+                        'የቁልቁል_ማርከሮች',	'መስቀለኛ_መንገድ',	'የአካል_ጉዳተኛ_ሰው',	'ድርብ_ታጠፍ',	'ድርብ_ቁልቁል_ማርከሮች',	'በጥንቃቄ_መንዳት',	'የአስፋልት_መንገድ_መጨረሻ',
+                        'የድልድይ_ግድግዳ_መጨረሻ',	'የሁለት_ጋሪ_መንገድ_መጨረሻ',	'በሁለት_የተከፈለ_መንገድ_መጨረሻ',	'የእርሻ_ማሽን_የሚገልጽ_አንድ',	'የእርሻ_ማሽን_የሚገልጽ_ሁለት',
+                        'ከፊት_ቀያሽ_አለ',	'መጀመሪያ_ግራ_ከዚያ_ቀጥታ_ታጠፍ',	'መጀመሪያ_ቀኝ_ከዚያ_ቀጥታ_ታጠፍ',	'ከውሃ_እስከ_አስፋልት_መንገድ',	'ለባቡር_ሎኮሞቲቭ_መንገድ_ስጥ',
+                        'ጎባጣ_ድልድይ',	'የቤት_እንስሳት',	'ከታጣፊ_መንገድ_ላይ_የሚገነጠል',	'የሚጫወቱ_ልጆች',	'ደረጃ_በእንቅፋት_መሻገር',	'የተጫነ_ደረቅ_ተሽከርካሪ_ከፊት',	'ወንዶች_በስራ_ ላይ',
+                        'ጠባብ_ድልድይ',	'በመንገዳው_በሁለት_መንገድ_ተከፈለ',	'ከፍት_ወይም_ዳገታማ_ድልድይ_ከፊት',	'ማረሻ_የእርሻ_ተሽከርካሪ_ከፊት',	'ወንዝ_ዳር',
+                        'ተከታታይ_መኪና',	'ድርብ_የባቡር_መስመር',	'ባቡር_በስተግራ_ይሻገራል',	'ባቡር_በስተቀኝ_ይሻገራል',	'ነጠላ_የባቡር_አቋራጭ',	'በመንገዱ_አቋራጭ_የባቡር_ሎኮሞቲቭ',	'የባቡር_መሻገሪያ_T',
+                        'የመውደቅ_ወይም_የመውደቅ_ስጋት_መንገድ',	'የመንገድ_ጉብታዎች',	'በሁለቱም_ጎን_መንገዱ_ይጠባል',	'መንገዱ_በቀኝ_ይጠባል',	'መንገድ_ከኪሳራ_ጋር',	'የመንገድ_ስራ_ከፊት',
+                        'ክብ_ዙር',	'ትምህርት_ቤት',	'የመንገዱን_ወደ_ግራ_ጥርት_ማዘዋወር',	'የመንገዱን_አቅጣጫ_አጥራ',	'የጎን_መንገድ_ቅርንጫፍ_ግራ',	'የጎን_መንገድ_ቅርንጫፍ_ቀኝ',	'የግራ_ጎን_መንገድ',
+                        'ሰያፍ_የቀኝ_ጎን_መንገድ',	'የጎን_መንገድ_ቀኝ',	'ተንሸራታች_መንገድ',	'ሁለት_መንታ_ያለው_መንገድ',	'ቁልቁል_ዳገት_ወደታች',	'ቁልቁል_ዳገት_ወደላይ',	'አመላካች',	'ቲ_ቅርጽ_ያለው_መንገድ',
+                        'ቲ_ቅርጽ',	'በግራ_በኩል_የሚዋሃድ_መንገድ_አለ',	'ከፊት_የትራፊክ_ምልክቶች_አሉ',	'ትራም_በመንገድ_ላይ',	'የሁለት_መንገድ_ትራፊክ_በፊት_ማቋረጫ_ላይ',
+                        'ባለሁለት_መንገድ_ትራፊክ',	'ያልተስተካከለ_መንገድ',	'የማስጠንቀቂያ_ቀስት_እና_መሰጠት_ውስጥ',	'የማስጠንቀቂያ_ቀስት_ወደፊት_ይቆማል',	'የውሃ_ኮርስ_በመንገድ_ዳር',
+                        'የዱር_እንስሳት',	'ነፋስ',	'ዋይ_መገናኛ',	'የዜብራ_መንገድ',	'ዝግዛግ_መንገድ']
+# print(classification_report(y_test_array, y_pred_array, labels=[0,1,2,3]))
+print(classification_report(y_test_array, y_pred_array, target_names=target_names))
+
+
+
+
+=================================================
+# code to evaluet models using different metrics
+=================================================
+import numpy as np
+y_gt = y_test_array
+y_pr = y_pred_array
+from sklearn.metrics import f1_score, precision_score,recall_score
+p_macro = precision_score(y_gt, y_pr, average="macro")
+p_micro = precision_score(y_gt, y_pr, average="micro")
+p_weighted = precision_score(y_gt, y_pr, average="weighted")
+r_macro = recall_score(y_gt, y_pr, average="macro")
+r_micro = recall_score(y_gt, y_pr, average="micro")
+r_weighted = recall_score(y_gt, y_pr, average="weighted")
+fl_macro = f1_score(y_gt, y_pr, average="macro")
+f1_micro = f1_score(y_gt, y_pr, average="micro")
+f1_weighted = f1_score(y_gt, y_pr, average="weighted")
+print('============ Precision Score ============')
+print("P_macro:  {:.2f}".format(p_macro *100))
+print("P_micro:  {:.2f}".format(p_micro *100))
+print("P_weighted:  {:.2f}".format(p_weighted *100))
+print('============ Recall Score ============')
+print("R_macro:  {:.2f}".format(r_macro *100))
+print("R_micro:  {:.2f}".format(r_micro *100))
+print("R_weighted:  {:.2f}".format(r_weighted *100))
+print('============ F1 Score ============')
+print("F1_macro:  {:.2f}".format(fl_macro *100))
+print("F1_micro:  {:.2f}".format(f1_micro*100))
+print("F1_weighted:  {:.2f}".format(f1_weighted*100))
+
+
+
+
+
+
+=================================================
+# Code to plote failure case panel
+=================================================
+# Get model predictions
+pred_probs = model.predict([X_test,X_test])  # shape: (num_samples, num_classes)
+pred_labels = np.argmax(pred_probs, axis=1)
+confidences = np.max(pred_probs, axis=1)  # confidence of predicted class
+
+y_test_labels = np.argmax(y_test, axis=1)
+y_test_labels = np.argmax(y_test, axis=1) if len(y_test.shape) > 1 else y_test
+# Find misclassified images
+misclassified_idx = np.where(pred_labels != y_test_labels)[0]
+# Optional: sort by confidence (highest confidence mistakes first)
+misclassified_idx = misclassified_idx[np.argsort(-confidences[misclassified_idx])]
+
+top_n = len(misclassified_idx)  # for a 2x3 panel
+top_misclassified = misclassified_idx[:top_n]
+
+class_names = ['ለብስክሌት_ብቻ_የተፈቀደ_ነው',	'የአደባባዩን_ግራ_ይዘህ_ንዳ',	'የአደባባዩን_ቀኝ_ይዘህ_ንዳ',	'በመንገዱ_ላይ_የተፈቀደ_አነስተኛ_ፍጥነት_መጨረሻ',
+                        'ፍንዳታ_ለሚያስከትል_ጭነት_የተፈቀደ',	'በግራ_በኩል_ያሽከርክሩ',	'በቀኝ_በኩል_ያሽከርክሩ',	'የጭነት_ተሽከርካሪ_መተላለፊያ',	'አደባባይ_መኖሩን_የሚገልጽ',
+                        'የተፈቀደ_አነስተኛ_የፍጥነት_መጠን',	'የመኪና_ማቆሚያን_የሚገልጽ',	'በቀስት_በተጠቆመው_አቅጣጫ_ቀጥል',
+                        'ወደ_ግራ_ታጠፍ',	'ተሸከርካሪዎች_ወደ_ተመሳሳይ_መዳረሻ_ለመጓዝ_በሁለቱም_በኩል_ሊያልፉ_ይችላሉ',
+                        'ለአንድ_መስመር_ከተቀመጠው_አነስተኛ_ፍጥነት_በላይ_ማሽከርከርን_የሚያስገድድ',
+                        'በተለያየ_መስመር_ውስጥ_ተፈጻሚ_እንድሆን_የተቀመጠ_አነስተኛ_የፍጥነት_ወሰን',	'በተለያየ_መስመር_ውስጥ_ተፈጻሚ_እንድሆን_የተቀመ_የፍጥነት_ወሰን',
+                        'አልጋ_መኖሩን_የሚገልጽ',	'የእግረኛ_መንገድ',	'አንድ_ማይል_ርቀት_ወደ_ፓርኪንግ_ቦታ',	'የመመገቢያ_ቦታ',	'መሙያ_ጣቢያ',	'የመጀመሪያ_እርዳታን_የሚገልጽ',
+                        'ሆስፒታል',	'መረጃ_ቤት',	'መዝናኛ_ወይም_ቡና_ቤት_መኖሩን_የሚገልጽ',	'የመኪና_ማቆሚያ_ቦታ_ከድንገተኛ_ስልክ_ጋር',	'የመኪና_ማቆሚያ_ቦታ',
+                        'የጥገና_ቦታ',	'በዚህ_ለተሽከርካሪ_ትራፊክ_መንገድ_የለም',	'ለተሽከርካ_ትራፊክ_መንገድ_የለም',	'የአንድ_መንገድ_ትራፊክ',
+                        'የህዝብ_ቴሌፎን',	'የጥገና_ፋሲሊቲ',	'የክፍያ_ዳስ_ምልክት',	'የቱሪስት_እረፍት_ወይም_አካባቢ',	'የጭነት_መኝታ_ምልክት',	'መንቃት_እዚህ_ይጀመራል',
+                        'የክብደት_ገደብ',	'ደንበኞች',	'የቅድሚያ_መንገዱ_መጨረሻ',	'የመጨረሻ_ከተማ_ፍጥነት_ገደብ',	'ባዶ_መንገድ_ስጥ',	'ለሚመጡ_ተሽከርካሪዎች_መንገድ_ስጥ',
+                        'መንገድ_ስጥ',	'በእንስሳት_የሚነዱ_ጋሪዎች_የሉም',	'ምንም_ሳይክል_የለም',	'መግቢያ_የለም',	'ፈንጂዎች_የሉም',	'ከተጠቆመው_ክብደት_በላይ_ምንም_ዕቃ_የለም',
+                        'በእጅ_የሚነዳ_ጋሪ_የለም',	'ጥሩምባ_የለም','ወደ_ግራ_መታጠፍ_የተከለከለ',	'ለተጫነ_ተሽከርካሪ_ማለፍ_የለም',	'ምንም_ተሽከርካሪ_ከሶሎ_ሞተር_ሳይክል_በስተቀር',	'ምንም_ሞተር_ተሽከርካሪ',
+                        'ከሁለት_እግር_በላይ_ያላቸው_ተሽከርካሪዎች_መቅደም_የተከለከለ',	'የመኪና_ማቆሚያ_የለም',	'እግረኞች_የሉም',	'ወደ_ቀኝ_መታጠፍ_የተከለከለ',	'ብቸኛ_ሞተር_ሳይክል_የለም',
+                        'ማቆም_የለም',	'የሚጎተት_መኪና_የለም',	'የተጎተቱ_ካራቫስ_የለም',	'የከተማ_ክልል',	'ወደ_ዩ_ግራ_መታጠፍ_የለም',	'ወደ_ዩ_ቀኝ_መታጠፍ_የለም',
+                        'ምንም_የተሽከርካሪ_እጀታ_ጭነት_በላይ_አልተገለጸም',	'ከኸያ_ቶን_በላይ_ተሽከርካሪ_የተከለከለ',	'ተሽከርካሪ_የለም',	'ከከፍተኛው_ወርድ_በላይ_ምንም_ተሽከርካሪ_አይታይም',
+                        'ከተገለጸው_ርዝመት_በላይ_የተከለከለ',	'ከሚታየው_ከፍታ_በላይ_ምንም_ተሽከርካሪ_ማለፍ_አይችልም',	'የመጠበቅ_መጨረሻ',	'አይጠበቅም',	'ቅድሚያ_መንገድ',	'ገደብ_አልቋል',
+                        'መስቀለኛ_መንገድ_ከመግባትህ_በፊት_አቁም',	'አቁም',	'ከፍተኛው_ፍጥነት',	'መኪና_አለ',	'ወደግራ_ታጠፍ',	'ወደ_ቀኝ_ታጠፍ',	'ጋሪዎች_ከፊት_አሉ',
+                        'የቁልቁል_ማርከሮች',	'መስቀለኛ_መንገድ',	'የአካል_ጉዳተኛ_ሰው',	'ድርብ_ታጠፍ',	'ድርብ_ቁልቁል_ማርከሮች',	'በጥንቃቄ_መንዳት',	'የአስፋልት_መንገድ_መጨረሻ',
+                        'የድልድይ_ግድግዳ_መጨረሻ',	'የሁለት_ጋሪ_መንገድ_መጨረሻ',	'በሁለት_የተከፈለ_መንገድ_መጨረሻ',	'የእርሻ_ማሽን_የሚገልጽ_አንድ',	'የእርሻ_ማሽን_የሚገልጽ_ሁለት',
+                        'ከፊት_ቀያሽ_አለ',	'መጀመሪያ_ግራ_ከዚያ_ቀጥታ_ታጠፍ',	'መጀመሪያ_ቀኝ_ከዚያ_ቀጥታ_ታጠፍ',	'ከውሃ_እስከ_አስፋልት_መንገድ',	'ለባቡር_ሎኮሞቲቭ_መንገድ_ስጥ',
+                        'ጎባጣ_ድልድይ',	'የቤት_እንስሳት',	'ከታጣፊ_መንገድ_ላይ_የሚገነጠል',	'የሚጫወቱ_ልጆች',	'ደረጃ_በእንቅፋት_መሻገር',	'የተጫነ_ደረቅ_ተሽከርካሪ_ከፊት',	'ወንዶች_በስራ_ ላይ',
+                        'ጠባብ_ድልድይ',	'በመንገዳው_በሁለት_መንገድ_ተከፈለ',	'ከፍት_ወይም_ዳገታማ_ድልድይ_ከፊት',	'ማረሻ_የእርሻ_ተሽከርካሪ_ከፊት',	'ወንዝ_ዳር',
+                        'ተከታታይ_መኪና',	'ድርብ_የባቡር_መስመር',	'ባቡር_በስተግራ_ይሻገራል',	'ባቡር_በስተቀኝ_ይሻገራል',	'ነጠላ_የባቡር_አቋራጭ',	'በመንገዱ_አቋራጭ_የባቡር_ሎኮሞቲቭ',	'የባቡር_መሻገሪያ_T',
+                        'የመውደቅ_ወይም_የመውደቅ_ስጋት_መንገድ',	'የመንገድ_ጉብታዎች',	'በሁለቱም_ጎን_መንገዱ_ይጠባል',	'መንገዱ_በቀኝ_ይጠባል',	'መንገድ_ከኪሳራ_ጋር',	'የመንገድ_ስራ_ከፊት',
+                        'ክብ_ዙር',	'ትምህርት_ቤት',	'የመንገዱን_ወደ_ግራ_ጥርት_ማዘዋወር',	'የመንገዱን_አቅጣጫ_አጥራ',	'የጎን_መንገድ_ቅርንጫፍ_ግራ',	'የጎን_መንገድ_ቅርንጫፍ_ቀኝ',	'የግራ_ጎን_መንገድ',
+                        'ሰያፍ_የቀኝ_ጎን_መንገድ',	'የጎን_መንገድ_ቀኝ',	'ተንሸራታች_መንገድ',	'ሁለት_መንታ_ያለው_መንገድ',	'ቁልቁል_ዳገት_ወደታች',	'ቁልቁል_ዳገት_ወደላይ',	'አመላካች',	'ቲ_ቅርጽ_ያለው_መንገድ',
+                        'ቲ_ቅርጽ',	'በግራ_በኩል_የሚዋሃድ_መንገድ_አለ',	'ከፊት_የትራፊክ_ምልክቶች_አሉ',	'ትራም_በመንገድ_ላይ',	'የሁለት_መንገድ_ትራፊክ_በፊት_ማቋረጫ_ላይ',
+                        'ባለሁለት_መንገድ_ትራፊክ',	'ያልተስተካከለ_መንገድ',	'የማስጠንቀቂያ_ቀስት_እና_መሰጠት_ውስጥ',	'የማስጠንቀቂያ_ቀስት_ወደፊት_ይቆማል',	'የውሃ_ኮርስ_በመንገድ_ዳር',
+                        'የዱር_እንስሳት',	'ነፋስ',	'ዋይ_መገናኛ',	'የዜብራ_መንገድ',	'ዝግዛግ_መንገድ'] # include all traffic signs
+
+
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import matplotlib.patches as patches
+
+# === Register both fonts manually ===
+amharic_font_path = '/usr/share/fonts/truetype/noto/NotoSansEthiopic-Regular.ttf'
+latin_font_path = '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf'
+
+fm.fontManager.addfont(amharic_font_path)
+fm.fontManager.addfont(latin_font_path)
+
+# === Now set fallback ===
+plt.rcParams['font.family'] = ['Noto Sans Ethiopic', 'Noto Sans', 'DejaVu Sans']
+
+# === plotting code ===
+fig, axes = plt.subplots(4, 5, figsize=(16, 16))
+for i, ax in enumerate(axes.flat):
+    if i >= len(top_misclassified):  # avoid out-of-range index
+        ax.axis('off')  # hide extra axes
+        continue
+
+    idx = top_misclassified[i]
+    img = X_test[idx]
+
+    # Display image
+    ax.imshow(img)
+
+        # Set background color for this subplot only
+    ax.set_facecolor('#d3d3d3')
+
+    # Add a full border around the image (all sides)
+    rect = patches.Rectangle(
+        (0, 0), 1, 1,                     # full axes coordinates
+        transform=ax.transAxes,
+        linewidth=2,                       # border thickness
+        edgecolor='black',                   # border color
+        facecolor='none'                   # no fill
+    )
+    ax.add_patch(rect)
+
+    title_text = (
+        f"Predicted: {class_names[pred_labels[idx]].replace('_', ' ')}\n"
+        f"True: {class_names[y_test_labels[idx]].replace('_', ' ')}\n"
+        f"Confidence: {confidences[idx]*100:.0f}%"
+    )
+    ax.set_title(title_text, fontsize=12)
+    ax.axis('off')
+
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+=================================================
+# code to plot confidence plot
+=================================================
+import matplotlib.pyplot as plt
+import numpy as np
+
+top_idx = top_misclassified[:25]  # select top 10 misclassified samples
+
+plt.figure(figsize=(16, 6))
+
+for i, idx in enumerate(top_idx):
+    plt.bar(
+        i,
+        confidences[idx]*100,   # convert to %
+        color='salmon',
+        edgecolor='black'
+    )
+
+plt.xticks(
+    range(len(top_idx)),
+    [f"True: {class_names[y_test_labels[idx]]}\nPred: {class_names[pred_labels[idx]]}" for idx in top_idx],
+    rotation=45,
+    ha='right'
+)
+plt.ylabel("Confidence (%)")
+plt.title("Model Confidence for Top Misclassified Samples")
+plt.ylim(0, 100)
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+=================================================
+#
+=================================================
+
+
+
+
+
+
+
+
+
+
+=
